@@ -93,7 +93,7 @@ class Handler(socket.socket):
 
 class Server(socket.socket):
 
-    def __init__(self, hostname: str="127.0.0.1", port: int=80, handler: typing.Type[socket.socket]=Handler):
+    def __init__(self, hostname: str = "0.0.0.0", port: int = 8891, handler: typing.Type[socket.socket] = Handler):
         socket.socket.__init__(self, family=socket.AF_INET, type=socket.SOCK_STREAM)
         self.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.bind((hostname, port))

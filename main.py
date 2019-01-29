@@ -4,7 +4,7 @@ from synergistic.broker import server
 if __name__ == "__main__":
     poller = Poll(catch_errors=False)
 
-    broker_server = server.Server("127.0.0.1", 8891, handler=server.Handler)
+    broker_server = server.Server()
 
     poller.add_server(broker_server)
 

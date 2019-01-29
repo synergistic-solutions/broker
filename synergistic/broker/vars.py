@@ -1,9 +1,11 @@
 class Type:
     BROKER = 'broker'
     SERVER = 'server'
-    APPLICATION = 'application'
+    WEBAPP = 'webapp'
     INDEXER = 'indexer'
     CRAWLER = 'crawler'
+    STORAGE = 'storage'
+    MONITOR = 'monitor'
 
 
 class Destination(Type):

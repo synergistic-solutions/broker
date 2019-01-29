@@ -42,7 +42,6 @@ class Client(socket.socket):
         if not channel:
             return
 
-        print(data)
         subscription = self.subscriptions.get(channel, None)
         if subscription:
             func, limit = subscription
