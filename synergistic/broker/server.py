@@ -32,7 +32,12 @@ class Handler(socket.socket):
                 self.handle(message)
 
     def handle(self, message):
-        data = json.loads(message)
+        try:
+            data = json.loads(message)
+        except json.JSONDecodeError:
+            self.close()
+            return
+
         channel = data.get('channel', None)
 
         if not channel:
