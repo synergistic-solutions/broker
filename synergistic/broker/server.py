@@ -3,10 +3,10 @@ import uuid
 import socket
 import typing
 
-from Crypto import Random
 from Crypto.PublicKey import RSA
-from Crypto.Cipher import AES, PKCS1_OAEP
+from Crypto.Cipher import PKCS1_OAEP
 
+from synergistic.broker import encryption
 from synergistic.broker.vars import Type
 
 
@@ -27,36 +27,40 @@ class Handler(socket.socket):
         self.name = None
         self.info = None
         self.state = 0
+        # don't encrypt if it's on the loop back interface
+        self.encrypt = self.getpeername()[0] != "127.0.0.1"
         self.aes_key = None
+        self.buffer = b''
 
     def on_receive(self):
         message = self.recv(4096*16)
         if not message:
             self.close()
             return
-        buffer = message
-        for message in buffer.split(b'\r\n\r\n'):
+
+        message = self.buffer + message
+        buffer = message.split(b'\r\n\r\n')
+
+        for message in buffer[:-1]:
             if message:
                 self.handle(message)
 
+        self.buffer = buffer[-1]
+
     def handle(self, message):
-        if self.state == 0:
-            cipher = PKCS1_OAEP.new(self.rsa_key)
-            message = cipher.decrypt(message)
-            self.aes_key = message
-            self.state = 1
+        if self.encrypt:
+            if self.state == 0:
+                cipher = PKCS1_OAEP.new(self.rsa_key)
+                message = cipher.decrypt(message)
+                self.aes_key = message
+                self.state = 1
 
-            self.send(b"hello")
-            return
+                # send a message to trigger the next client state
+                self.send(b"{}")
+                return
 
-        # should be aes encrypted
-        iv = message[:AES.block_size]
+            message = encryption.decrypt(self.aes_key, message)
 
-        cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
-        message = cipher.decrypt(message[AES.block_size:])
-        message = self._unpad(message)
-
-        # decoded by the unpad
         if isinstance(message, bytes):
             message = message.decode('utf-8')
 
@@ -124,22 +128,14 @@ class Handler(socket.socket):
         self.clients[self.uuid] = self
 
     def on_connect(self):
-        super().send(self.rsa_pub_key)
+        if self.encrypt:
+            self.send(self.rsa_pub_key)
 
     def send(self, data, **kwargs):
-        data = self._pad(data)
-        iv = Random.new().read(AES.block_size)
-        cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
-        data = iv + cipher.encrypt(data) + b'\r\n\r\n'
-        super().send(data, **kwargs)
-
-    @staticmethod
-    def _pad(s):
-        return s + (AES.block_size - len(s) % AES.block_size) * chr(AES.block_size - len(s) % AES.block_size).encode('utf-8')
-
-    @staticmethod
-    def _unpad(s):
-        return s[:-ord(s[len(s) - 1:])]
+        if self.encrypt and self.state >= 1:
+            data = encryption.encrypt(self.aes_key, data)
+        data += b'\r\n\r\n'
+        socket.socket.send(self, data, **kwargs)
 
 
 class Server(socket.socket):
