@@ -6,6 +6,11 @@ import socket
 import typing
 import platform
 
+from Crypto import Random
+from Crypto.Cipher import AES
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP
+
 
 class Client(socket.socket):
 
@@ -21,23 +26,54 @@ class Client(socket.socket):
         self.name = name
         self.subscriptions = {}
         self.callbacks = {}
+        self.state = 0
+        self.aes_key = Random.new().read(16)
+        self.queue = []
 
     def on_receive(self):
         message = self.recv(4096*16)
         if not message:
             self.close()
             return
-        buffer = message.decode('utf-8')
-        for message in buffer.split('\r\n'):
+        buffer = message
+        for message in buffer.split(b'\r\n\r\n'):
             if message:
                 self.handle(message)
 
     def handle(self, message):
+        if self.state == 0:
+            cipher = PKCS1_OAEP.new(RSA.import_key(message))
+            ciphertext = cipher.encrypt(self.aes_key) + b'\r\n\r\n'
+            super().send(ciphertext)
+            self.state = 1
+            return
+
+        # should be encrypted
+
+        iv = message[:AES.block_size]
+        cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
+        message = cipher.decrypt(message[AES.block_size:])
+        message = self._unpad(message)
+
+        if self.state == 1:
+
+            self.register()
+
+            for item in self.queue:
+                self.send(item)
+            self.queue = []
+            self.state = 2
+            return
+
+        # decoded by the unpad
+        # message = message.decode('utf-8')
+
         try:
             data = json.loads(message)
-        except:
+        except json.JSONDecodeError:
             print("error decoding")
             return
+
         channel = data.get('matched_channel', data.get('channel', None))
         if not channel:
             return
@@ -52,6 +88,28 @@ class Client(socket.socket):
                 self.unsubscribe(channel)
 
     def on_connect(self):
+        pass
+
+    def send(self, data, **kwargs):
+        if self.state == 0:
+            self.queue.append(data)
+            return
+
+        data = self._pad(data)
+        iv = Random.new().read(AES.block_size)
+        cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
+        data = iv + cipher.encrypt(data) + b'\r\n\r\n'
+        super().send(data, **kwargs)
+
+    @staticmethod
+    def _pad(s):
+        return s + (AES.block_size - len(s) % AES.block_size) * chr(AES.block_size - len(s) % AES.block_size).encode('utf-8')
+
+    @staticmethod
+    def _unpad(s):
+        return s[:-ord(s[len(s) - 1:])]
+
+    def register(self):
         data = {
             'uuid': self.uuid,
             'name': self.name,
@@ -84,4 +142,4 @@ class Client(socket.socket):
             'msg_id': msg_id,
             'payload': payload
         }
-        self.send(json.dumps(data).encode('utf-8') + b'\r\n')
+        self.send(json.dumps(data).encode('utf-8') + b'\r\n\r\n', )

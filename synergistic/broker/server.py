@@ -3,12 +3,18 @@ import uuid
 import socket
 import typing
 
+from Crypto import Random
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import AES, PKCS1_OAEP
+
 from synergistic.broker.vars import Type
 
 
 class Handler(socket.socket):
 
     server_uuid = str(uuid.uuid1(clock_seq=sum([ord(i) for i in Type.BROKER])))
+    rsa_key = RSA.generate(1024)
+    rsa_pub_key = rsa_key.publickey().export_key('DER')
     clients = {}
 
     def __init__(self, fd: int):
@@ -20,18 +26,40 @@ class Handler(socket.socket):
         self.uuid = None
         self.name = None
         self.info = None
+        self.state = 0
+        self.aes_key = None
 
     def on_receive(self):
         message = self.recv(4096*16)
         if not message:
             self.close()
             return
-        buffer = message.decode('utf-8')
-        for message in buffer.split('\r\n'):
+        buffer = message
+        for message in buffer.split(b'\r\n\r\n'):
             if message:
                 self.handle(message)
 
     def handle(self, message):
+        if self.state == 0:
+            cipher = PKCS1_OAEP.new(self.rsa_key)
+            message = cipher.decrypt(message)
+            self.aes_key = message
+            self.state = 1
+
+            self.send(b"hello")
+            return
+
+        # should be aes encrypted
+        iv = message[:AES.block_size]
+
+        cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
+        message = cipher.decrypt(message[AES.block_size:])
+        message = self._unpad(message)
+
+        # decoded by the unpad
+        if isinstance(message, bytes):
+            message = message.decode('utf-8')
+
         try:
             data = json.loads(message)
         except json.JSONDecodeError:
@@ -63,16 +91,16 @@ class Handler(socket.socket):
             wildcards.append('.'.join(channel_split[:i] + ['*']))
         wildcards = [channel] + wildcards[::-1]
 
-        specific_cache = json.dumps(data).encode('utf-8') + b'\r\n'
+        specific_cache = json.dumps(data).encode('utf-8') + b'\r\n\r\n'
 
         for uuid, client in self.clients.items():
             matching = client.find_subscriptions(wildcards)
             if matching:
                 try:
                     if matching == channel:
-                        client.send(specific_cache)
+                        client.send(specific_cache, )
                     else:
-                        client.send(json.dumps({**data, 'matched_channel': matching}).encode('utf-8') + b'\r\n')
+                        client.send(json.dumps({**data, 'matched_channel': matching}).encode('utf-8') + b'\r\n\r\n')
                 except OSError:
                     print("lost a client")
 
@@ -94,6 +122,24 @@ class Handler(socket.socket):
         self.uuid = self.info['uuid']
         self.name = self.info['name']
         self.clients[self.uuid] = self
+
+    def on_connect(self):
+        super().send(self.rsa_pub_key)
+
+    def send(self, data, **kwargs):
+        data = self._pad(data)
+        iv = Random.new().read(AES.block_size)
+        cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
+        data = iv + cipher.encrypt(data) + b'\r\n\r\n'
+        super().send(data, **kwargs)
+
+    @staticmethod
+    def _pad(s):
+        return s + (AES.block_size - len(s) % AES.block_size) * chr(AES.block_size - len(s) % AES.block_size).encode('utf-8')
+
+    @staticmethod
+    def _unpad(s):
+        return s[:-ord(s[len(s) - 1:])]
 
 
 class Server(socket.socket):
